@@ -6,7 +6,14 @@ const bcrypt = require("bcryptjs");
 const sendOTP = require("../utils/sendEmail");
 
 exports.registerUser = async (req, res) => {
-    const { name, email, password, confirmPassword } = req.body;
+    const {
+        firstName,
+        lastName,
+        email,
+        password,
+        confirmPassword,
+        referralCode: referralFromBody
+    } = req.body;
     const referralCode = req.query.ref || req.body.referralCode; // Check for referral in query or body
 
     try {
@@ -30,14 +37,15 @@ exports.registerUser = async (req, res) => {
 
         // 👤 Create New User
         const user = await User.create({
-            name,
+            firstName,
+            lastName,
             email,
             password,
             confirmPassword,
             otp,
             otpExpiry,
-            referredBy: referredByUser ? referredByUser._id : null, // Store referrer's ID
-            referralCode: Math.random().toString(36).substring(2, 10), // Generate unique referral code
+            referredBy: referredByUser ? referredByUser._id : null,
+            referralCode: Math.random().toString(36).substring(2, 10),
         });
 
         // ✅ Reward Referrer (Give points, discounts, etc.)
@@ -81,12 +89,12 @@ exports.loginUser = async (req, res) => {
         if (!isMatch) {
             return res.status(401).json({ message: "Invalid credentials" });
         }
-            res.json({
-                _id: user.id,
-                name: user.name,
-                email: user.email,
-                token: generateToken(user.id),
-            });
+        res.json({
+            _id: user.id,
+            name: user.name,
+            email: user.email,
+            token: generateToken(user.id),
+        });
     } catch (error) {
         res.status(500).json({ message: "Server error" });
     }
@@ -94,28 +102,37 @@ exports.loginUser = async (req, res) => {
 
 exports.forgotPassword = async (req, res) => {
     const { email } = req.body;
+
     try {
         const user = await User.findOne({ email });
         if (!user) {
             return res.status(404).json({ message: "User not found" });
         }
 
-        // Generate Reset Token
+        // Generate and hash the token
         const resetToken = crypto.randomBytes(32).toString("hex");
-        user.resetPasswordToken = resetToken;
-        user.resetPasswordExpire = Date.now() + 10 * 60 * 1000; // 10 minutes
-        await user.save();
+        const hashedToken = crypto.createHash('sha256').update(resetToken).digest('hex');
 
-        // Send Email with Reset Link
+        await User.findOneAndUpdate(
+            { email: email },
+            {
+                resetPasswordToken: hashedToken, // Store the hashed version
+                resetPasswordExpire: Date.now() + 10 * 60 * 1000 // 10 minutes
+            },
+            { runValidators: false }
+        );
+
+        // Send email with the raw token (unhashed)
+        const resetUrl = `http://localhost:3000/reset-password/${resetToken}`;
+        
         const transporter = nodemailer.createTransport({
             service: "gmail",
             auth: {
-                user: process.env.EMAIL_USER, // Your email
-                pass: process.env.EMAIL_PASS, // Your password
+                user: process.env.EMAIL_USER,
+                pass: process.env.EMAIL_PASS,
             },
         });
 
-        const resetUrl = `http://localhost:3000/reset-password/${resetToken}`;
         const mailOptions = {
             to: user.email,
             subject: "Password Reset Request",
@@ -126,34 +143,70 @@ exports.forgotPassword = async (req, res) => {
         res.status(200).json({ message: "Password reset email sent!" });
 
     } catch (error) {
-        res.status(500).json({ message: "Server error", error: error.message });
+        console.error("Forgot Password Error:", error);
+        res.status(500).json({ 
+            message: "Server error", 
+            error: error.message 
+        });
     }
 };
 
 exports.resetPassword = async (req, res) => {
     const { token } = req.params;
-    const { newPassword } = req.body;
+    const { newPassword, confirmPassword } = req.body;
+
+    // Validate inputs
+    if (!token) {
+        return res.status(400).json({ message: "Reset token is required" });
+    }
+
+    if (!newPassword || !confirmPassword) {
+        return res.status(400).json({ message: "Both password fields are required" });
+    }
+
+    if (newPassword !== confirmPassword) {
+        return res.status(400).json({ message: "Passwords do not match" });
+    }
+
+    if (newPassword.length < 6) {
+        return res.status(400).json({ message: "Password must be at least 6 characters" });
+    }
 
     try {
+        // Hash the token for comparison
+        const hashedToken = crypto.createHash('sha256').update(token).digest('hex');
+
         const user = await User.findOne({
-            resetPasswordToken: token,
-            resetPasswordExpire: { $gt: Date.now() }, // Check if token is valid
+            resetPasswordToken: hashedToken,
+            resetPasswordExpire: { $gt: Date.now() }
         });
 
         if (!user) {
             return res.status(400).json({ message: "Invalid or expired token" });
         }
 
-        // Hash the new password
-        user.password = await bcrypt.hash(newPassword, 10);
-        user.resetPasswordToken = undefined;
-        user.resetPasswordExpire = undefined;
-        await user.save();
+        const salt = await bcrypt.genSalt(10);
+        const hashedPassword = await bcrypt.hash(newPassword, salt);
+
+        // Update using findOneAndUpdate to avoid validation issues
+        await User.findOneAndUpdate(
+            { _id: user._id },
+            { 
+                password: hashedPassword,
+                resetPasswordToken: undefined,
+                resetPasswordExpire: undefined 
+            },
+            { runValidators: false }
+        );
 
         res.status(200).json({ message: "Password reset successful!" });
 
     } catch (error) {
-        res.status(500).json({ message: "Server error", error: error.message });
+        console.error("Reset Password Error:", error);
+        res.status(500).json({ 
+            message: "Server error", 
+            error: error.message 
+        });
     }
 };
 
