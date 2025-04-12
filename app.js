@@ -16,6 +16,7 @@ app.use(cors({
 
 // ✅ Serve the public folder so QR codes are accessible
 app.use("/public", express.static(path.join(__dirname, "public")));
+app.use('/uploads', express.static(path.join(__dirname, 'public/uploads')));
 
 // ✅ API Routes
 app.use("/api/users", require("./routes/authRoutes"));

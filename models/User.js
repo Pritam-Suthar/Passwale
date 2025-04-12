@@ -3,15 +3,9 @@ const bcrypt = require("bcryptjs");
 const crypto = require("crypto");
 
 const userSchema = new mongoose.Schema({
-    name: { type: String, required: true },
-    firstName: {
-        type: String,
-        trim: true
-    },
-    lastName: {
-        type: String,
-        trim: true
-    },
+    name: { type: String },
+    firstName: { type: String, required: true, trim: true },
+    lastName: { type: String, required: true, trim: true },
     email: { type: String, required: true, unique: true },
     password: { type: String, required: true },
     phone: { type: String, required: false },
@@ -36,24 +30,25 @@ const userSchema = new mongoose.Schema({
 // ✅ Combined pre("save") Hook (Fixes password hash & referral code issues)
 userSchema.pre("save", async function (next) {
     if (this.isModified("password")) {
-        console.log("Hashing password for:", this.email);
-        this.password = await bcrypt.hash(this.password, 10);
+        const salt = await bcrypt.genSalt(10);
+        this.password = await bcrypt.hash(this.password, salt);
     }
 
-    if (!this.referralCode) {
-        this.referralCode = crypto.randomBytes(4).toString("hex"); // Generates a unique referral code
+    // Generate referral code if new user
+    if (this.isNew && !this.referralCode) {
+        this.referralCode = crypto.randomBytes(4).toString("hex");
     }
+
+    // Combine first/last name if not provided
+    if (!this.name && (this.firstName || this.lastName)) {
+        this.name = `${this.firstName} ${this.lastName}`.trim();
+    }
+
+    userSchema.methods.matchPassword = async function (enteredPassword) {
+        return await bcrypt.compare(enteredPassword, this.password);
+      };
 
     next();
 });
-
-// ✅ Password Verification Method
-userSchema.methods.matchPassword = async function (enteredPassword) {
-    console.log("Entered Password:", enteredPassword);
-    console.log("Stored Hashed Password:", this.password);
-    const isMatch = await bcrypt.compare(enteredPassword, this.password);
-    console.log("Password Match Result:", isMatch);
-    return isMatch;
-};
 
 module.exports = mongoose.model("User", userSchema);

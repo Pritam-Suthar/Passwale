@@ -4,6 +4,8 @@ const crypto = require("crypto");
 const nodemailer = require("nodemailer");
 const bcrypt = require("bcryptjs");
 const sendOTP = require("../utils/sendEmail");
+const multer = require('multer');
+const path = require('path');
 
 exports.registerUser = async (req, res) => {
     const {
@@ -14,19 +16,32 @@ exports.registerUser = async (req, res) => {
         confirmPassword,
         referralCode: referralFromBody
     } = req.body;
-    const referralCode = req.query.ref || req.body.referralCode; // Check for referral in query or body
+    const referralCode = req.query.ref || req.body.referralCode;
 
     try {
+        // Validation
+        if (!firstName || !lastName || !email || !password || !confirmPassword) {
+            return res.status(400).json({ message: "All fields are required" });
+        }
+
+        if (password !== confirmPassword) {
+            return res.status(400).json({ message: "Passwords do not match" });
+        }
+
+        if (password.length < 6) {
+            return res.status(400).json({ message: "Password must be at least 6 characters" });
+        }
+
         const userExists = await User.findOne({ email });
         if (userExists) {
             return res.status(400).json({ message: "User already exists" });
         }
 
-        // Generate OTP and Expiry Time
+        // Generate OTP
         const otp = Math.floor(100000 + Math.random() * 900000).toString();
-        const otpExpiry = Date.now() + 5 * 60 * 1000; // 5 minutes expiry
+        const otpExpiry = Date.now() + 5 * 60 * 1000;
 
-        // Check if user was referred
+        // Handle referral
         let referredByUser = null;
         if (referralCode) {
             referredByUser = await User.findOne({ referralCode });
@@ -35,36 +50,40 @@ exports.registerUser = async (req, res) => {
             }
         }
 
-        // 👤 Create New User
+        // Create user - DON'T include confirmPassword
         const user = await User.create({
+            name: `${firstName} ${lastName}`,
             firstName,
             lastName,
             email,
-            password,
-            confirmPassword,
+            password, // Let pre-save hook handle hashing
             otp,
             otpExpiry,
-            referredBy: referredByUser ? referredByUser._id : null,
+            referredBy: referredByUser?._id,
             referralCode: Math.random().toString(36).substring(2, 10),
         });
 
-        // ✅ Reward Referrer (Give points, discounts, etc.)
+        // Reward referrer
         if (referredByUser) {
-            referredByUser.rewardPoints += 10;  // Example: Give 10 points
+            referredByUser.rewardPoints += 10;
             await referredByUser.save();
         }
 
-        // Send OTP to email
+        // Send OTP
         await sendOTP(email, otp);
 
         res.status(201).json({
             message: "OTP sent to email. Verify your account.",
             userId: user._id,
-            referralCode: user.referralCode,
-            referredBy: referredByUser ? referredByUser.referralCode : null,
+            email: user.email
         });
+
     } catch (error) {
-        res.status(500).json({ message: "Server error", error: error.message });
+        console.error('Registration Error:', error);
+        res.status(500).json({ 
+            message: "Server error during registration",
+            error: error.message 
+        });
     }
 };
 
@@ -72,31 +91,51 @@ exports.loginUser = async (req, res) => {
     const { email, password } = req.body;
 
     try {
-        const user = await User.findOne({ email });
-        console.log("User found:", user);
-
+        console.log('Login attempt for:', email); // Debug log
+        
+        const user = await User.findOne({ email }).select('+password');
         if (!user) {
-            return res.status(401).json({ message: "User not found" });
+            console.log('User not found for email:', email);
+            return res.status(401).json({ 
+                success: false,
+                message: "Invalid credentials" 
+            });
         }
-        console.log("User found:", user);
-        console.log("Entered password:", password);
-        console.log("Stored password:", user.password);
 
-        // Check if the password matches
-        const isMatch = await user.matchPassword(password);
-        console.log("Password match:", isMatch);
+        console.log('Entered password:', password);
+        console.log('Stored hash:', user.password);
+
+        const isMatch = await bcrypt.compare(password, user.password);
+        console.log('Password match result:', isMatch);
 
         if (!isMatch) {
-            return res.status(401).json({ message: "Invalid credentials" });
+            return res.status(401).json({ 
+                success: false,
+                message: "Invalid credentials" 
+            });
         }
-        res.json({
-            _id: user.id,
-            name: user.name,
-            email: user.email,
-            token: generateToken(user.id),
+
+        // Generate token
+        const token = generateToken(user._id);
+        
+        res.status(200).json({
+            success: true,
+            token,
+            user: {
+                _id: user._id,
+                name: user.name,
+                email: user.email,
+                role: user.role
+            }
         });
+
     } catch (error) {
-        res.status(500).json({ message: "Server error" });
+        console.error('Login Error:', error);
+        res.status(500).json({ 
+            success: false,
+            message: "Server error during login",
+            error: error.message 
+        });
     }
 };
 
@@ -124,7 +163,7 @@ exports.forgotPassword = async (req, res) => {
 
         // Send email with the raw token (unhashed)
         const resetUrl = `http://localhost:3000/reset-password/${resetToken}`;
-        
+
         const transporter = nodemailer.createTransport({
             service: "gmail",
             auth: {
@@ -144,9 +183,9 @@ exports.forgotPassword = async (req, res) => {
 
     } catch (error) {
         console.error("Forgot Password Error:", error);
-        res.status(500).json({ 
-            message: "Server error", 
-            error: error.message 
+        res.status(500).json({
+            message: "Server error",
+            error: error.message
         });
     }
 };
@@ -191,10 +230,10 @@ exports.resetPassword = async (req, res) => {
         // Update using findOneAndUpdate to avoid validation issues
         await User.findOneAndUpdate(
             { _id: user._id },
-            { 
+            {
                 password: hashedPassword,
                 resetPasswordToken: undefined,
-                resetPasswordExpire: undefined 
+                resetPasswordExpire: undefined
             },
             { runValidators: false }
         );
@@ -203,9 +242,9 @@ exports.resetPassword = async (req, res) => {
 
     } catch (error) {
         console.error("Reset Password Error:", error);
-        res.status(500).json({ 
-            message: "Server error", 
-            error: error.message 
+        res.status(500).json({
+            message: "Server error",
+            error: error.message
         });
     }
 };
@@ -267,50 +306,53 @@ exports.resendOTP = async (req, res) => {
     }
 };
 
-exports.getUserProfile = async (req, res) => {
+// Get current user profile
+exports.getMe = async (req, res) => {
     try {
-        const userId = req.user.id; // Extract user ID from authentication middleware
-        const user = await User.findById(userId).select("-password"); // Exclude password
-
-        if (!user) {
-            return res.status(404).json({ message: "User not found" });
-        }
-
-        res.status(200).json({ user });
+      const user = await User.findById(req.user.id).select('-password');
+      res.status(200).json(user);
     } catch (error) {
-        res.status(500).json({ message: "Server error", error: error.message });
+      console.error('Error getting user profile:', error);
+      res.status(500).json({ 
+        success: false,
+        message: 'Server error',
+        error: error.message 
+      });
     }
-};
+  };
 
-exports.updateUserProfile = async (req, res) => {
+// Update user profile
+exports.updateProfile = async (req, res) => {
     try {
-        const userId = req.user.id; // Extract user ID from authentication middleware
-        const { name, phone, dateOfBirth, gender, profileImage } = req.body;
-
-        if (!name || !phone || !dateOfBirth || !gender) {
-            return res.status(400).json({ message: "Phone, date of birth, and gender are required" });
-        }
-
-        const updatedUser = await User.findByIdAndUpdate(
-            userId,
-            { name, phone, dateOfBirth, gender, profileImage },
-            { new: true, runValidators: true }
-        ).select("-password"); // Exclude password
-
-        if (!updatedUser) {
-            return res.status(404).json({ message: "User not found" });
-        }
-        // Update profile fields
-        updatedUser.name = name;
-        updatedUser.phone = phone;
-        updatedUser.dateOfBirth = dateOfBirth;
-        updatedUser.gender = gender;
-        await updatedUser.save();
-        res.status(200).json({ message: "Profile updated successfully", user: updatedUser });
+      const updates = {
+        firstName: req.body.firstName,
+        lastName: req.body.lastName,
+        phone: req.body.phone,
+        dateOfBirth: req.body.dateOfBirth,
+        gender: req.body.gender,
+        profileImage: req.body.profileImage
+      };
+  
+      const user = await User.findByIdAndUpdate(
+        req.user.id,
+        updates,
+        { new: true, runValidators: true }
+      ).select('-password');
+  
+      res.status(200).json({
+        success: true,
+        message: 'Profile updated successfully',
+        user
+      });
     } catch (error) {
-        res.status(500).json({ message: "Server error", error: error.message });
+      console.error('Error updating profile:', error);
+      res.status(500).json({ 
+        success: false,
+        message: 'Server error',
+        error: error.message 
+      });
     }
-};
+  };
 
 exports.getReferralCode = async (req, res) => {
     try {
@@ -347,3 +389,54 @@ exports.getReferralStats = async (req, res) => {
     }
 };
 
+// Configure storage
+const storage = multer.diskStorage({
+    destination: function (req, file, cb) {
+      cb(null, 'public/uploads/profile-images');
+    },
+    filename: function (req, file, cb) {
+      cb(null, `${req.user.id}-${Date.now()}${path.extname(file.originalname)}`);
+    }
+  });
+  
+  // File filter
+  const fileFilter = (req, file, cb) => {
+    if (file.mimetype.startsWith('image/')) {
+      cb(null, true);
+    } else {
+      cb(new Error('Only image files are allowed!'), false);
+    }
+  };
+  
+  exports.upload = multer({ 
+    storage: storage,
+    fileFilter: fileFilter,
+    limits: { fileSize: 5 * 1024 * 1024 } // 5MB limit
+  });
+  
+  exports.updateProfileImage = async (req, res) => {
+    try {
+      if (!req.file) {
+        return res.status(400).json({ message: 'No file uploaded' });
+      }
+  
+      const imagePath = `/uploads/profile-images/${req.file.filename}`;
+      
+      const user = await User.findByIdAndUpdate(
+        req.user.id,
+        { profileImage: imagePath },
+        { new: true }
+      );
+  
+      res.status(200).json({
+        success: true,
+        profileImage: user.profileImage
+      });
+    } catch (error) {
+      console.error('Error updating profile image:', error);
+      res.status(500).json({ 
+        success: false,
+        message: 'Error updating profile image'
+      });
+    }
+  };
