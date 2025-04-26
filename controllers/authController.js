@@ -8,6 +8,8 @@ const multer = require('multer');
 const path = require('path');
 
 exports.registerUser = async (req, res) => {
+    console.log('Received request body:', req.body); // Add this line
+    console.log('Received query params:', req.query); // Add this line
     const {
         firstName,
         lastName,
@@ -16,7 +18,25 @@ exports.registerUser = async (req, res) => {
         confirmPassword,
         referralCode: referralFromBody
     } = req.body;
+
     const referralCode = req.query.ref || req.body.referralCode;
+
+    // Enhanced validation with detailed errors
+    const missingFields = [];
+    if (!firstName) missingFields.push('firstName');
+    if (!lastName) missingFields.push('lastName');
+    if (!email) missingFields.push('email');
+    if (!password) missingFields.push('password');
+    if (!confirmPassword) missingFields.push('confirmPassword');
+
+    if (missingFields.length > 0) {
+        console.log('Missing fields detected:', missingFields);
+        return res.status(400).json({ 
+            message: "All fields are required",
+            missingFields: missingFields,
+            receivedData: req.body // Send back what we actually received
+        });
+    }
 
     try {
         // Validation
@@ -250,31 +270,60 @@ exports.resetPassword = async (req, res) => {
 };
 
 exports.verifyOTP = async (req, res) => {
-    const { email, otp } = req.body;
+    const { userId, email, otp } = req.body;
 
     try {
-        const user = await User.findOne({ email });
+        // Validate input
+        if (!otp) {
+            return res.status(400).json({ message: "OTP is required" });
+        }
+
+        if (!userId && !email) {
+            return res.status(400).json({ message: "User ID or email is required" });
+        }
+
+        // Find user by either ID or email
+        const user = userId 
+            ? await User.findById(userId)
+            : await User.findOne({ email });
 
         if (!user) {
-            return res.status(400).json({ message: "User not found" });
+            return res.status(404).json({ message: "User not found" });
         }
 
         if (user.isVerified) {
             return res.status(400).json({ message: "User already verified" });
         }
 
-        if (user.otp !== otp || Date.now() > user.otpExpiry) {
-            return res.status(400).json({ message: "Invalid or expired OTP" });
+        if (!user.otp || !user.otpExpiry) {
+            return res.status(400).json({ message: "No OTP request found" });
         }
 
+        if (user.otp !== otp) {
+            return res.status(400).json({ message: "Invalid OTP" });
+        }
+
+        if (Date.now() > user.otpExpiry) {
+            return res.status(400).json({ message: "OTP has expired" });
+        }
+
+        // Update user
         user.isVerified = true;
         user.otp = null;
         user.otpExpiry = null;
         await user.save();
 
-        res.status(200).json({ message: "User verified successfully", token: generateToken(user.id) });
+        res.status(200).json({ 
+            success: true,
+            message: "User verified successfully", 
+            token: generateToken(user.id) 
+        });
     } catch (error) {
-        res.status(500).json({ message: "Server error", error: error.message });
+        console.error('OTP Verification Error:', error);
+        res.status(500).json({ 
+            message: "Server error during OTP verification",
+            error: error.message 
+        });
     }
 };
 
