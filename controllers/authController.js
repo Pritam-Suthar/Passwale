@@ -479,6 +479,7 @@ const storage = multer.diskStorage({
   
       res.status(200).json({
         success: true,
+        message: 'Profile image updated successfully',
         profileImage: user.profileImage
       });
     } catch (error) {
