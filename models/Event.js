@@ -12,7 +12,7 @@ const eventSchema = new mongoose.Schema({
     attendees: [{ type: mongoose.Schema.Types.ObjectId, ref: "User" }],
     ticketTypes: [
         {
-            ticketType: { type: String, enum: ["Early Bird", "Regular", "VIP"], required: true, default: "Regular" },
+            name: { type: String, required: true },  // "VIP", "Early Bird", etc.
             price: { type: Number, required: true },
             quantity: { type: Number, required: true }
         }
