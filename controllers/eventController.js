@@ -121,174 +121,131 @@ exports.getEvents = async (req, res) => {
 };
 
 exports.updateEvent = async (req, res) => {
-    const session = await mongoose.startSession();
-    session.startTransaction();
-    
-    try {
-        console.log('--- UPDATE EVENT REQUEST ---');
-        console.log('Headers:', req.headers);
-        console.log('Params:', req.params);
-        console.log('Body:', req.body);
-        console.log('File:', req.file ? {
-            originalname: req.file.originalname,
-            filename: req.file.filename,
-            size: req.file.size,
-            mimetype: req.file.mimetype
-        } : null);
+    console.log('--- UPDATE EVENT REQUEST ---');
+    console.log('Headers:', req.headers);
+    console.log('Body:', req.body);
+    console.log('File:', req.file ? {
+        originalname: req.file.originalname,
+        filename: req.file.filename,
+        size: req.file.size,
+        mimetype: req.file.mimetype,
+        path: req.file.path
+    } : null);
 
+    try {
         const { id } = req.params;
 
         // 1. Validate ObjectId
         if (!mongoose.Types.ObjectId.isValid(id)) {
-            await session.abortTransaction();
-            session.endSession();
+            console.error('Invalid ObjectId:', id);
             return res.status(400).json({ 
                 success: false,
                 message: "Invalid event ID format",
-                error: `Received ID: ${id}`
+                receivedId: id
             });
         }
 
-        // 2. Find existing event with session
-        const existingEvent = await Event.findById(id).session(session);
+        // 2. Find existing event
+        const existingEvent = await Event.findById(id);
         if (!existingEvent) {
-            await session.abortTransaction();
-            session.endSession();
+            console.error('Event not found:', id);
             return res.status(404).json({ 
                 success: false,
-                message: "Event not found",
-                id: id
+                message: "Event not found" 
             });
         }
 
-        // 3. Authorization check (uncommented and improved)
-        if (req.user.role !== "admin" && existingEvent.organizer.toString() !== req.user.id) {
-            await session.abortTransaction();
-            session.endSession();
-            return res.status(403).json({ 
-                success: false,
-                message: "Not authorized to update this event",
-                userRole: req.user.role,
-                organizerId: existingEvent.organizer.toString(),
-                userId: req.user.id
-            });
-        }
-
-        // 4. Prepare update data with validation
+        // 3. Prepare update data with validation
         const updateData = {
             name: req.body.name?.trim(),
             description: req.body.description?.trim(),
             location: req.body.location?.trim()
         };
 
-        // 5. Handle date/time with validation
+        // 4. Handle date/time with validation
         if (req.body.date && req.body.time) {
             try {
-                const dateTimeString = `${req.body.date.trim()} ${req.body.time.trim()}`;
                 const dateTime = moment.tz(
-                    dateTimeString,
+                    `${req.body.date} ${req.body.time}`,
                     "YYYY-MM-DD HH:mm",
                     "Asia/Kolkata"
-                );
-
-                if (!dateTime.isValid()) {
-                    throw new Error(`Invalid datetime: ${dateTimeString}`);
+                ).toDate();
+                
+                if (isNaN(dateTime.getTime())) {
+                    throw new Error('Invalid date');
                 }
                 
-                updateData.datetime = dateTime.toDate();
-            } catch (dateError) {
-                await session.abortTransaction();
-                session.endSession();
+                updateData.datetime = dateTime;
+            } catch (err) {
+                console.error("Date conversion error:", err);
                 return res.status(400).json({
                     success: false,
-                    message: "Invalid date/time format",
-                    received: {
-                        date: req.body.date,
-                        time: req.body.time
-                    },
-                    expectedFormat: "YYYY-MM-DD HH:mm"
+                    message: "Invalid date/time format"
                 });
             }
         }
 
-        // 6. Handle image upload with verification
+        // 5. Handle image upload with verification
         if (req.file) {
             try {
-                // Verify file was saved correctly
+                console.log('Processing image upload...');
+                
+                // Verify file exists on disk
                 const newImagePath = path.join(__dirname, '../public/event_images', req.file.filename);
-                try {
-                    await fs.promises.access(newImagePath, fs.constants.F_OK);
-                } catch (accessError) {
-                    throw new Error(`Uploaded file not found at: ${newImagePath}`);
-                }
-
+                await fs.access(newImagePath);
+                
                 updateData.image = `/event_images/${req.file.filename}`;
                 
-                // Delete old image if different (async)
+                // Delete old image if different
                 if (existingEvent.image && existingEvent.image !== updateData.image) {
                     const oldPath = path.join(__dirname, '../public', existingEvent.image);
                     if (fs.existsSync(oldPath)) {
-                        fs.unlink(oldPath, (err) => {
-                            if (err) console.error('Old image deletion error:', err);
-                        });
+                        await fs.unlink(oldPath);
                     }
                 }
             } catch (fileError) {
-                await session.abortTransaction();
-                session.endSession();
+                console.error('File processing error:', fileError);
                 
                 // Clean up failed upload
                 if (req.file) {
                     const tempPath = path.join(__dirname, '../public/event_images', req.file.filename);
                     if (fs.existsSync(tempPath)) {
-                        await fs.promises.unlink(tempPath);
+                        await fs.unlink(tempPath);
                     }
                 }
                 
                 return res.status(500).json({
                     success: false,
-                    message: "Image processing failed",
-                    error: process.env.NODE_ENV === 'development' ? fileError.message : undefined,
-                    file: {
-                        originalname: req.file.originalname,
-                        filename: req.file.filename
-                    }
+                    message: "Failed to process image upload",
+                    error: process.env.NODE_ENV === 'development' ? fileError.message : undefined
                 });
             }
         }
 
-        // 7. Perform the update with transaction
+        // 6. Perform the update
         const updatedEvent = await Event.findByIdAndUpdate(
             id,
             updateData,
             { 
                 new: true,
-                runValidators: true,
-                session,
-                context: 'query' // Important for proper validation
+                runValidators: true
             }
         ).populate('organizer', 'name email');
 
         if (!updatedEvent) {
-            await session.abortTransaction();
-            session.endSession();
+            console.error('Update operation failed');
             return res.status(500).json({
                 success: false,
-                message: "Update operation failed - no event returned"
+                message: "Failed to update event"
             });
         }
-
-        await session.commitTransaction();
-        session.endSession();
-
-        // 8. Prepare and send response
+        // 7. Successful response
         return res.status(200).json({
             success: true,
             message: "Event updated successfully",
             data: {
                 ...updatedEvent.toObject(),
                 datetime: updatedEvent.datetime?.toISOString(),
-                // Include other date fields if needed
                 image: updatedEvent.image ? 
                     `${req.protocol}://${req.get('host')}${updatedEvent.image}` : 
                     null
@@ -296,41 +253,16 @@ exports.updateEvent = async (req, res) => {
         });
 
     } catch (error) {
-        // Handle transaction cleanup
-        if (session.inTransaction()) {
-            await session.abortTransaction();
-            session.endSession();
-        }
-
-        console.error('FINAL UPDATE ERROR:', {
+        console.error('UPDATE EVENT ERROR:', {
             message: error.message,
             stack: error.stack,
-            name: error.name,
-            code: error.code,
-            body: req.body,
-            file: req.file
+            name: error.name
         });
-
-        // Clean up uploaded file if exists
-        if (req.file) {
-            try {
-                const tempPath = path.join(__dirname, '../public/event_images', req.file.filename);
-                if (fs.existsSync(tempPath)) {
-                    await fs.promises.unlink(tempPath);
-                }
-            } catch (cleanupError) {
-                console.error('File cleanup failed:', cleanupError);
-            }
-        }
 
         return res.status(500).json({
             success: false,
-            message: "Internal server error during update",
-            error: process.env.NODE_ENV === 'development' ? {
-                name: error.name,
-                message: error.message,
-                stack: error.stack
-            } : undefined
+            message: "Internal server error",
+            error: process.env.NODE_ENV === 'development' ? error.message : undefined
         });
     }
 };
