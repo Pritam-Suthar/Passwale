@@ -20,4 +20,14 @@ router.delete("/:id", protect, organizerOrAdminOnly, deleteEvent); // ✅ Only e
 router.post("/:eventId/attendees", protect, addAttendee); // ✅ Only logged-in users can register as attendees
 router.get("/:id/attendees", protect, getAttendees); // ✅ Only event organizer & admin can view attendees
 
+router.post("/bookings", async (req, res) => {
+    try {
+      const newBooking = req.body; // Data from frontend
+      console.log("Received booking:", newBooking);
+      res.status(201).json({ success: true, booking: newBooking });
+    } catch (err) {
+      res.status(500).json({ error: "Booking failed" });
+    }
+  });
+
 module.exports = router;
